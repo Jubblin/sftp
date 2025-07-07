@@ -29,20 +29,20 @@ jobs:
 
       - name: Pull latest image
         run: |
-          latest_tag="docker.pkg.github.com/${{ inputs.image }}/${{ inputs.tag }}"
+          latest_tag="ghcr.io/${{ inputs.image }}:${{ inputs.tag }}"
           echo "latest_tag=$latest_tag" >> "$GITHUB_ENV"
 
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com \
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
             -u ${{ github.actor }} --password-stdin
-          docker pull "$latest_tag"
-          docker logout docker.pkg.github.com
+          docker pull "$latest_tag" || true
+          docker logout ghcr.io
 
       - name: Check if git revision has changed
         id: revision
         run: |
           revision="$(docker image inspect --format \
             '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-            "$latest_tag")"
+            "$latest_tag" 2>/dev/null || echo 'none')"
           echo "$revision"
           if [ "$revision" != "$GITHUB_SHA" ]; then
             echo "Latest image revision ($revision) is not the same as current revision ($GITHUB_SHA)"
@@ -55,7 +55,7 @@ jobs:
       - name: Check for new updates
         id: updates
         run: |
-          packages="$(docker run --rm --entrypoint=/bin/sh "$latest_tag" -c "${{ inputs.update-check }}")"
+          packages="$(docker run --rm --entrypoint=/bin/sh "$latest_tag" -c "${{ inputs.update-check }}" 2>/dev/null || echo '')"
           echo "$packages"
           if [ "${#packages}" -gt 0 ]; then
             echo "Updates available"
@@ -77,67 +77,46 @@ jobs:
             echo "detected=false" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.detected == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true # for shunit2
+          submodules: true
 
-      - name: Build image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-platform image (DockerHub + GHCR)
         run: |
-          docker build . \
-            --pull=true \
+          docker buildx build . \
+            --pull \
             --file="${{ inputs.containerfile }}" \
+            --platform=linux/amd64,linux/arm64 \
             --tag="${{ inputs.image }}:${{ inputs.tag }}" \
+            --tag="ghcr.io/${{ inputs.image }}:${{ inputs.tag }}" \
             --label="org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label="org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label="org.opencontainers.image.created=$(date --rfc-3339=seconds)"
+            --label="org.opencontainers.image.created=$(date --rfc-3339=seconds)" \
+            --push
 
-      - name: Test image
+      # Optional: Test the built image for one platform on the runner (amd64)
+      - name: Test image (amd64 only)
         run: tests/run "${{ inputs.image }}:${{ inputs.tag }}"
-
-      - name: Save image
-        run: docker save -o "${{ inputs.tag }}.tar" "${{ inputs.image }}:${{ inputs.tag }}"
-
-      - name: Upload image as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.tag }}
-          path: "${{ inputs.tag }}.tar"
-          retention-days: 1
-
-  push:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/master'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download image
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.tag }}
-
-      - name: Load image
-        run: docker load -i "${{ inputs.tag }}.tar"
-
-      - name: Push image to GitHub registry
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com \
-            -u ${{ github.actor }} --password-stdin
-
-          github_tag=docker.pkg.github.com/${{ inputs.image }}/${{ inputs.tag }}
-          docker tag "${{ inputs.image }}:${{ inputs.tag }}" $github_tag
-          docker push "$github_tag"
-          docker logout docker.pkg.github.com
-
-      - name: Push images to Docker Hub registry
-        run: |
-          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login \
-            -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
-
-          docker push "${{ inputs.image }}:${{ inputs.tag }}"
-          docker logout
+        # If your test/run script supports multi-platform and QEMU is available,
+        # you can extend tests to arm64.
