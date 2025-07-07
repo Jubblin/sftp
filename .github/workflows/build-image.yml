@@ -89,11 +89,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+      # - name: Login to DockerHub
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.DOCKER_HUB_USERNAME }}
+      #     password: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -108,7 +108,7 @@ jobs:
             --pull \
             --file="${{ inputs.containerfile }}" \
             --platform=linux/amd64,linux/arm64 \
-            --tag="${{ inputs.image }}:${{ inputs.tag }}" \
+            # --tag="${{ inputs.image }}:${{ inputs.tag }}" \
             --tag="ghcr.io/${{ inputs.image }}:${{ inputs.tag }}" \
             --label="org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label="org.opencontainers.image.revision=$GITHUB_SHA" \
